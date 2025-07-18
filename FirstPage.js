@@ -1,25 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
-import * as FileSystem from 'expo-file-system';
+import React, { useRef, useEffect, useState } from "react";
 import {
-  View,
+  StyleSheet,
   Text,
+  View,
   Image,
   TouchableOpacity,
-  PermissionsAndroid,
-  Platform,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Easing,
   StatusBar,
   SafeAreaView,
   Dimensions,
-  Linking,
-} from 'react-native';
-import AudioRecorderPlayer from 'react-native-audio-recorder-player';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import CryptoJS from "crypto-js";
+  Animated,
+  Platform,
+  Vibration,
+} from "react-native";
+import { Audio } from 'expo-audio'; // Updated import
+import * as FileSystem from 'expo-file-system';
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const spacing = {
@@ -30,51 +24,180 @@ const spacing = {
   xl: 48,
 };
 
-const ACR_CLOUD_HOST = 'identify-eu-west-1.acrcloud.com';
-const ACR_CLOUD_ACCESS_KEY = 'e4eff7d79a11fc7fa51da825669098d1';
-const ACR_CLOUD_ACCESS_SECRET = '9qEUgmj1nG1Bw5Sv3i0npzCqxzYTPmYKihCrdaEb';
+// Custom Alert component
+const CustomAlert = ({ visible, title, message, onConfirm, onCancel, confirmText = "OK", cancelText = "Cancel" }) => {
+  if (!visible) return null;
+
+  return (
+    <View style={alertStyles.overlay}>
+      <View style={alertStyles.container}>
+        <Text style={alertStyles.title}>{title}</Text>
+        <Text style={alertStyles.message}>{message}</Text>
+        <View style={alertStyles.buttonContainer}>
+          {onCancel && (
+            <TouchableOpacity onPress={onCancel} style={[alertStyles.button, alertStyles.cancelButton]}>
+              <Text style={alertStyles.buttonText}>{cancelText}</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={onConfirm} style={[alertStyles.button, alertStyles.confirmButton]}>
+            <Text style={alertStyles.buttonText}>{confirmText}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+const alertStyles = StyleSheet.create({
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  container: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 20,
+    width: '80%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  message: {
+    fontSize: 16,
+    marginBottom: 20,
+    textAlign: 'center',
+    color: '#555',
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+  },
+  button: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 5,
+    marginHorizontal: 5,
+  },
+  confirmButton: {
+    backgroundColor: '#1E90FF',
+  },
+  cancelButton: {
+    backgroundColor: '#ccc',
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+});
+
+// Music Recognition Service
+class MusicRecognitionService {
+  constructor() {
+    this.apiKey = '025a159d08msh3ada06c6c3459b5p19b45bjsnb8b7675b1980';
+    this.apiHost = 'shazam.p.rapidapi.com';
+  }
+
+  async recognizeMusic(audioUri) {
+    try {
+      const audioBase64 = await FileSystem.readAsStringAsync(audioUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const response = await fetch('https://shazam.p.rapidapi.com/songs/detect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-RapidAPI-Key': this.apiKey,
+          'X-RapidAPI-Host': this.apiHost,
+        },
+        body: JSON.stringify({
+          audio: audioBase64,
+        }),
+      });
+
+      const result = await response.json();
+      return this.parseShazamResponse(result);
+    } catch (error) {
+      console.error('Music recognition error:', error);
+      throw new Error('Failed to recognize music');
+    }
+  }
+
+  parseShazamResponse(response) {
+    if (!response.matches || response.matches.length === 0) {
+      return null;
+    }
+
+    const match = response.matches[0];
+    return {
+      title: match.title,
+      artist: match.subtitle,
+      album: match.sections?.[0]?.metadata?.find(item => item.title === 'Album')?.text,
+      genre: match.genres?.primary,
+      releaseDate: match.sections?.[0]?.metadata?.find(item => item.title === 'Released')?.text,
+      albumArt: match.images?.coverart,
+      previewUrl: match.hub?.actions?.find(action => action.type === 'uri')?.uri,
+      shazamUrl: match.url,
+      confidence: match.score || 0,
+    };
+  }
+}
+
+const RoundedImageButton = ({ uri, size, onPress, isRecording }) => (
+  <View style={[styles.imageWrapper, { 
+    width: size, 
+    height: size, 
+    borderRadius: size / 2,
+    borderWidth: isRecording ? 4 : 0,
+    borderColor: isRecording ? '#FF0000' : 'transparent'
+  }]}>
+    <TouchableOpacity onPress={onPress} activeOpacity={0.8}>
+      <Image 
+        source={{ uri }} 
+        style={[styles.image, { 
+          width: size, 
+          height: size, 
+          borderRadius: size / 2 
+        }]} 
+      />
+      {isRecording && (
+        <View style={styles.recordingIndicator}>
+          <View style={styles.recordingPulse} />
+        </View>
+      )}
+    </TouchableOpacity>
+  </View>
+);
 
 export default function FirstPage({ navigation }) {
-  const [hasPermission, setHasPermission] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordedAudioUri, setRecordedAudioUri] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [recognitionResult, setRecognitionResult] = useState(null);
-
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const rippleScale = useRef(new Animated.Value(0)).current;
-  const rippleOpacity = useRef(new Animated.Value(1)).current;
-  const rippleAnimationRef = useRef(null);
-  const audioRecorderPlayerRef = useRef(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const timerRef = useRef(null);
+  const [recording, setRecording] = useState(null);
+  const [showAlert, setShowAlert] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({});
+  const musicRecognitionService = useRef(new MusicRecognitionService()).current;
 
   useEffect(() => {
-    audioRecorderPlayerRef.current = new AudioRecorderPlayer();
-
-    const requestPermissions = async () => {
-      if (Platform.OS === 'android') {
-        try {
-          const granted = await PermissionsAndroid.requestMultiple([
-            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-            PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
-            PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-          ]);
-
-          const recordAudioGranted = granted['android.permission.RECORD_AUDIO'] === PermissionsAndroid.RESULTS.GRANTED;
-          const readStorageGranted = granted['android.permission.READ_EXTERNAL_STORAGE'] === PermissionsAndroid.RESULTS.GRANTED;
-          const writeStorageGranted = granted['android.permission.WRITE_EXTERNAL_STORAGE'] === PermissionsAndroid.RESULTS.GRANTED;
-
-          setHasPermission(recordAudioGranted && readStorageGranted && writeStorageGranted);
-        } catch (err) {
-          console.warn('Permission request error:', err);
-          setHasPermission(false);
-        }
-      } else {
-        setHasPermission(true);
-      }
-    };
-
-    requestPermissions();
-
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 1200,
@@ -82,278 +205,209 @@ export default function FirstPage({ navigation }) {
     }).start();
 
     return () => {
-      if (audioRecorderPlayerRef.current) {
-        audioRecorderPlayerRef.current.stopRecorder();
-        audioRecorderPlayerRef.current.stopPlayer();
-        audioRecorderPlayerRef.current.removeRecordBackListener();
-        audioRecorderPlayerRef.current = null;
+      if (recording) {
+        recording.stopAndUnloadAsync();
       }
-      if (rippleAnimationRef.current) {
-        rippleAnimationRef.current.stop();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
       }
     };
-  }, [fadeAnim]);
+  }, [fadeAnim, recording]);
 
-  const startContinuousRippleAnimation = () => {
-    if (rippleAnimationRef.current) {
-      rippleAnimationRef.current.stop();
-    }
-
-    const singleRippleAnimation = Animated.parallel([
-      Animated.timing(rippleScale, {
-        toValue: 1,
-        duration: 1500,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: true,
-      }),
-      Animated.timing(rippleOpacity, {
-        toValue: 0,
-        duration: 1500,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: true,
-      }),
-    ]);
-
-    rippleAnimationRef.current = Animated.loop(singleRippleAnimation);
-    rippleScale.setValue(0);
-    rippleOpacity.setValue(1);
-    rippleAnimationRef.current.start();
+  const startRecordingTimer = () => {
+    setRecordingTime(0);
+    timerRef.current = setInterval(() => {
+      setRecordingTime(prev => prev + 1);
+    }, 1000);
   };
 
-  const stopContinuousRippleAnimation = () => {
-    if (rippleAnimationRef.current) {
-      rippleAnimationRef.current.stop();
-      rippleAnimationRef.current = null;
-    }
-    rippleScale.setValue(0);
-    rippleOpacity.setValue(0);
-  };
-
-  const handleRecordButtonPress = async () => {
-    if (isProcessing) return;
-    
-    if (isRecording) {
-      await onStopRecord();
-    } else {
-      await onStartRecord();
+  const stopRecordingTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
   };
 
-  const onStartRecord = async () => {
-    if (!hasPermission) {
-      Alert.alert(
-        'Permission Required',
-        'Microphone access is needed. Please grant permissions in settings.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() }
-        ]
-      );
-      return;
-    }
-
+  const startRecording = async () => {
     try {
-      const path = Platform.select({
-        ios: FileSystem.documentDirectory + 'audibot_recording.m4a',
-        android: FileSystem.cacheDirectory + 'audibot_recording.mp4',
-      });
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        setAlertConfig({
+          title: "Permission Denied",
+          message: "Microphone access is required to identify music.",
+          onConfirm: () => setShowAlert(false),
+        });
+        setShowAlert(true);
+        return;
+      }
 
-      startContinuousRippleAnimation();
-      await audioRecorderPlayerRef.current.startRecorder(path);
+      Vibration.vibrate(100);
       setIsRecording(true);
-      setRecordedAudioUri('');
-      setRecognitionResult("Recording...");
-    } catch (error) {
-      console.error('Recording error:', error);
-      setIsRecording(false);
-      stopContinuousRippleAnimation();
-      Alert.alert('Error', 'Failed to start recording. Please try again.');
-      setRecognitionResult("Error starting recording.");
+      
+      // Create a new recording instance
+      const newRecording = new Audio.Recording();
+      await newRecording.prepareToRecordAsync(
+        Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY
+      );
+      await newRecording.startAsync();
+      
+      setRecording(newRecording);
+      startRecordingTimer();
+
+    } catch (err) {
+      console.error('Failed to start recording', err);
+      setAlertConfig({
+        title: "Recording Error",
+        message: "Failed to start recording: " + err.message,
+        onConfirm: () => setShowAlert(false),
+      });
+      setShowAlert(true);
+      stopRecording();
     }
   };
 
-  const onStopRecord = async () => {
+  const stopRecording = async () => {
     try {
-      const result = await audioRecorderPlayerRef.current.stopRecorder();
-      audioRecorderPlayerRef.current.removeRecordBackListener();
+      stopRecordingTimer();
       setIsRecording(false);
-      setRecordedAudioUri(result);
-      stopContinuousRippleAnimation();
-      setRecognitionResult("Processing audio...");
+      setIsAnalyzing(true);
+      
+      if (!recording) {
+        console.warn("No active recording to stop.");
+        setIsAnalyzing(false);
+        return;
+      }
 
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setRecording(null);
+
+      await analyzeRecording(uri);
+      
+    } catch (err) {
+      console.error('Failed to stop recording', err);
+      setIsAnalyzing(false);
+      setAlertConfig({
+        title: "Recording Error",
+        message: "Failed to stop recording: " + err.message,
+        onConfirm: () => setShowAlert(false),
+      });
+      setShowAlert(true);
+    }
+  };
+
+  const analyzeRecording = async (filePath) => {
+    try {
+      if (recordingTime < 5) {
+        setAlertConfig({
+          title: "Recording Too Short",
+          message: "Please record for at least 5 seconds",
+          onConfirm: () => setShowAlert(false),
+        });
+        setShowAlert(true);
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const result = await musicRecognitionService.recognizeMusic(filePath);
+      
+      setIsAnalyzing(false);
+      
       if (result) {
-        await processAudioForRecognition(result);
+        navigation.navigate("MusicResult", {
+          musicData: result,
+          duration: recordingTime
+        });
       } else {
-        Alert.alert('Error', 'No audio file found after recording.');
-        setRecognitionResult("Recording failed, no audio file.");
-        setIsProcessing(false);
+        setAlertConfig({
+          title: "No Match Found",
+          message: "Unable to identify the music.",
+          onConfirm: () => setShowAlert(false),
+        });
+        setShowAlert(true);
       }
     } catch (error) {
-      console.error('Error stopping recording:', error);
-      setIsRecording(false);
-      stopContinuousRippleAnimation();
-      Alert.alert('Error', 'Failed to stop recording. Please try again.');
-      setRecognitionResult("Error stopping recording.");
-      setIsProcessing(false);
+      setIsAnalyzing(false);
+      setAlertConfig({
+        title: "Recognition Failed",
+        message: "An error occurred: " + error.message,
+        onConfirm: () => setShowAlert(false),
+      });
+      setShowAlert(true);
     }
   };
 
-  const processAudioForRecognition = async (audioUri) => {
-    setIsProcessing(true);
+  const handleRecordPress = () => {
+    if (isAnalyzing) return;
+    isRecording ? stopRecording() : startRecording();
+  };
 
-    try {
-      const fileInfo = await FileSystem.getInfoAsync(audioUri);
-      if (!fileInfo.exists) {
-        throw new Error("Recorded audio file does not exist.");
-      }
-      const audioFileSize = fileInfo.size;
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
 
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-      const httpMethod = "POST";
-      const httpUri = "/v1/identify";
-      const dataType = "audio";
-      const signatureVersion = "1";
-
-      const stringToSign = `${httpMethod}\n${httpUri}\n${ACR_CLOUD_ACCESS_KEY}\n${dataType}\n${signatureVersion}\n${timestamp}`;
-      const signature = CryptoJS.HmacSHA1(stringToSign, ACR_CLOUD_ACCESS_SECRET).toString(CryptoJS.enc.Base64);
-
-      const formData = new FormData();
-      formData.append('sample', {
-        uri: audioUri,
-        name: `audibot_recording.${Platform.OS === 'ios' ? 'm4a' : 'mp4'}`,
-        type: Platform.select({
-          ios: 'audio/m4a',
-          android: 'audio/mp4',
-        }),
-      });
-      formData.append('access_key', ACR_CLOUD_ACCESS_KEY);
-      formData.append('sample_bytes', audioFileSize.toString());
-      formData.append('timestamp', timestamp);
-      formData.append('signature', signature);
-      formData.append('data_type', dataType);
-      formData.append('signature_version', signatureVersion);
-
-      const response = await fetch(`https://${ACR_CLOUD_HOST}${httpUri}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          'Accept': 'application/json',
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-
-      const recognitionResponse = await response.json();
-
-      if (recognitionResponse.status?.code === 0) {
-        if (recognitionResponse.metadata?.music?.length > 0) {
-          const track = recognitionResponse.metadata.music[0];
-          const recognizedSong = {
-            title: track.title || "Unknown Title",
-            artist: track.artists?.[0]?.name || "Unknown Artist",
-            album: track.album?.name || "Unknown Album",
-            artwork: track.artwork_url || "https://placehold.co/150x150/CCCCCC/000000?text=No+Artwork",
-          };
-
-          setRecognitionResult(`🎶 ${recognizedSong.title}\nby ${recognizedSong.artist}`);
-
-          const currentHistory = await AsyncStorage.getItem('history');
-          const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
-          historyArray.unshift({
-            id: Date.now().toString(),
-            timestamp: new Date().toISOString(),
-            ...recognizedSong,
-          });
-          await AsyncStorage.setItem('history', JSON.stringify(historyArray));
-
-          navigation.navigate("myMusic", recognizedSong);
-        } else {
-          setRecognitionResult("No music found. Try a clearer sample!");
-          Alert.alert("Recognition Failed", "Could not identify the music. Please try again.");
-        }
-      } else {
-        const errorMsg = recognitionResponse.status?.msg || 'Unknown error';
-        Alert.alert('API Error', `Error: ${errorMsg}`);
-        setRecognitionResult(`Error: ${errorMsg}`);
-      }
-    } catch (error) {
-      console.error('Processing failed:', error);
-      Alert.alert('Error', `Failed to identify music: ${error.message || 'Unknown error'}`);
-      setRecognitionResult("Failed to identify. Please try again.");
-    } finally {
-      setIsProcessing(false);
-    }
+  const getButtonText = () => {
+    if (isAnalyzing) return "Analyzing...";
+    if (isRecording) return "Stop Recording";
+    return "Tap to Identify Music";
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#1E90FF" />
       <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-        <Text style={styles.title}>Welcome to Audibot</Text>
+        <Text style={styles.title}>Welcome to AudiBot</Text>
         <Text style={styles.subtitle}>Your personal music companion</Text>
 
-        {/* Modified button without microphone icon */}
-        <TouchableOpacity
-          onPress={handleRecordButtonPress}
-          disabled={isProcessing}
-          style={styles.recordButton}
-          activeOpacity={0.7}
-        >
-          <View style={styles.buttonContent}>
-            {isRecording && (
-              <Animated.View
-                style={[
-                  styles.ripple,
-                  {
-                    transform: [{ scale: rippleScale }],
-                    opacity: rippleOpacity,
-                  },
-                ]}
-              />
-            )}
-            <Image
-              source={{ uri: "https://i.pinimg.com/736x/8a/5c/19/8a5c19de4089d00f2922cc25b855409f.jpg" }}
-              style={styles.image}
-            />
-            <View style={styles.iconContainer}>
-              {isProcessing && (
-                <ActivityIndicator size="large" color="#fff" />
-              )}
-            </View>
-          </View>
-        </TouchableOpacity>
+        <RoundedImageButton
+          uri="https://i.pinimg.com/736x/8a/5c/19/8a5c19de4089d00f2922cc25b855409f.jpg"
+          size={SCREEN_WIDTH * 0.6}
+          onPress={handleRecordPress}
+          isRecording={isRecording}
+        />
 
-        <View style={styles.statusContainer}>
-          {!hasPermission && (
-            <Text style={styles.permissionText}>
-              Grant microphone permissions to start!
-            </Text>
-          )}
-          {isRecording && <Text style={styles.statusText}>Recording...</Text>}
-          {isProcessing && <Text style={styles.statusText}>Processing...</Text>}
-          {recognitionResult && !isProcessing && !isRecording && (
-            <Text style={styles.resultText}>{recognitionResult}</Text>
-          )}
-          {!isRecording && !isProcessing && hasPermission && !recognitionResult && (
-            <Text style={styles.instructionText}>Tap to identify music</Text>
-          )}
+        <Text style={styles.instructionText}>
+          {getButtonText()}
+        </Text>
+
+        {isRecording && (
+          <Text style={styles.recordingTimeText}>
+            {formatTime(recordingTime)}
+          </Text>
+        )}
+
+        {isAnalyzing && (
+          <Text style={styles.analyzingText}>
+            🎵 Listening for music...
+          </Text>
+        )}
+
+        <View style={{ marginTop: spacing.lg }}>
+          <TouchableOpacity 
+            onPress={() => navigation.navigate("myMusic")}
+            style={styles.button}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.buttonText}>Enter My Music</Text>
+          </TouchableOpacity>
         </View>
-
-        <TouchableOpacity
-          style={styles.myMusicButton}
-          onPress={() => navigation.navigate("myMusic")}
-        >
-          <Text style={styles.myMusicButtonText}>My Music</Text>
-        </TouchableOpacity>
       </Animated.View>
+
+      <CustomAlert
+        visible={showAlert}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        onConfirm={alertConfig.onConfirm}
+        onCancel={alertConfig.onCancel}
+        confirmText={alertConfig.confirmText}
+        cancelText={alertConfig.cancelText}
+      />
     </SafeAreaView>
   );
 }
 
-// Your original styles remain completely unchanged
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -363,104 +417,83 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.md,
   },
   title: {
     fontSize: 34,
     fontWeight: "700",
     color: "#fff",
-    marginBottom: 8,
+    marginBottom: spacing.xs,
     textAlign: "center",
   },
   subtitle: {
     fontSize: 18,
     color: "#e0f0ff",
-    marginBottom: 32,
+    marginBottom: spacing.lg,
     textAlign: "center",
   },
-  recordButton: {
-    width: SCREEN_WIDTH * 0.6,
-    height: SCREEN_WIDTH * 0.6,
-    borderRadius: SCREEN_WIDTH * 0.3,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.4)',
-    overflow: 'hidden',
+  imageWrapper: {
+    overflow: "hidden",
+    backgroundColor: "#ffffff20",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 8,
   },
-  buttonContent: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  ripple: {
-    position: 'absolute',
-    width: '100%',
-    height: '100%',
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderRadius: SCREEN_WIDTH * 0.3,
-  },
   image: {
-    width: '100%',
-    height: '100%',
-    borderRadius: SCREEN_WIDTH * 0.3,
-    position: 'absolute',
+    resizeMode: "cover",
   },
-  iconContainer: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    borderRadius: SCREEN_WIDTH * 0.3,
-    position: 'absolute',
-  },
-  statusContainer: {
-    marginTop: 32,
-    minHeight: 50,
-    alignItems: 'center',
-  },
-  permissionText: {
-    color: 'gold',
-    fontSize: 18,
-    textAlign: 'center',
-  },
-  statusText: {
-    color: '#fff',
-    fontSize: 18,
-    textAlign: 'center',
-  },
-  resultText: {
-    color: '#fff',
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  instructionText: {
-    color: '#fff',
-    fontSize: 18,
-    textAlign: 'center',
-  },
-  myMusicButton: {
-    marginTop: 48,
-    backgroundColor: '#fff',
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    borderRadius: 25,
+  button: {
+    backgroundColor: "#fff",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    borderRadius: 50,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowRadius: 6,
     elevation: 5,
   },
-  myMusicButtonText: {
-    color: '#1E90FF',
+  buttonText: {
+    color: "#1E90FF",
+    fontSize: 20,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  recordingIndicator: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  recordingPulse: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FF0000',
+    opacity: 0.8,
+  },
+  recordingTimeText: {
+    marginTop: spacing.sm,
     fontSize: 18,
-    fontWeight: '600',
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  instructionText: {
+    marginTop: spacing.sm,
+    fontSize: 16,
+    color: '#e0f0ff',
+    textAlign: 'center',
+  },
+  analyzingText: {
+    marginTop: spacing.sm,
+    fontSize: 16,
+    color: '#ffff00',
+    textAlign: 'center',
+    fontWeight: 'bold',
   },
 });
